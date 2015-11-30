@@ -10,13 +10,12 @@ using Cudafy;
 using System.Diagnostics;
 /*
  Class to generate hypermesh class labeling on parallel systems.
- 
- 
  */
 namespace LabelComponent
 {
     class HyperMesh
     {
+        DataAdapter da = new DataAdapter();
 
         int[,] graphArray = new int[N, d + 1];
         /// <summary>
@@ -24,106 +23,144 @@ namespace LabelComponent
         /// (i,1) is color or weight
         /// </summary>
         int[,] colorArray = new int[N, 2];
-        public const int d = 12;
+        public const int d = 11;
         public const int N = 4096;
+        public int colors = 1;
         Random random = new Random();
 
-        public string labelMesh()
+        public int getDiameter()
+        {
+            return d;
+        }
+        public void labelMesh()
         {
             bool returnValue = true;
             string returnString = "";
             //calculate component labeling using BFS for CPU
-            Stopwatch s = Stopwatch.StartNew();
+            Stopwatch cpuTime = Stopwatch.StartNew();
             int[,] cpuColorArray = this.runBFS(graphArray, (int[,])colorArray.Clone());
-            s.Stop();
+            cpuTime.Stop();
 
-            returnString = "CPU TIME : " + s.Elapsed.Ticks;
-
-            int[,] gpuColorArray = (int[,])colorArray.Clone();
             CudafyModule km = CudafyModule.TryDeserialize();
+            CudafyTranslator.GenerateDebug = true;
             if (km == null || !km.TryVerifyChecksums())
             {
                 km = CudafyTranslator.Cudafy();
                 km.TrySerialize();
             }
+
             GPGPU gpu = CudafyHost.GetDevice(CudafyModes.Target, CudafyModes.DeviceId);
             gpu.LoadModule(km);
 
-
+            //graph array
             int[,] deviceGraphArray = gpu.Allocate<int>(graphArray);
             gpu.CopyToDevice(graphArray, deviceGraphArray);
+
+            //color array copy for GPU
+            int[,] copyToGpuColorArray = (int[,])colorArray.Clone();
+            //color array copy on GPU and transfer in next statement
+
+            //comparer
+            int[] swapOccured = new int[N];
+            for (int i = 0; i < N; i++)
+                swapOccured[i] = 0;
+            int[] deviceSwapOccured = gpu.Allocate(swapOccured);
+            gpu.CopyToDevice(swapOccured, deviceSwapOccured);
+
+
+            Stopwatch gpuTime = new Stopwatch();
+            int iterations = 0;
+            bool runIterator = true;
             try
             {
-                bool repeat = true;
-                s = Stopwatch.StartNew();
-                s.Stop();
-                while (repeat)
+
+                while (runIterator)
                 {
-                    int[,] deviceColorArray = gpu.Allocate<int>(gpuColorArray);
-                    gpu.CopyToDevice(gpuColorArray, deviceColorArray);
-                    s.Start();
-                    gpu.Launch(N, 1, "kernelLabel", deviceGraphArray, deviceColorArray);
-                    s.Stop();
+                    int[,] deviceColorArray = gpu.Allocate<int>(copyToGpuColorArray);
+                    gpu.CopyToDevice(copyToGpuColorArray, deviceColorArray);
 
-                    int[,] compareArray = (int[,])gpuColorArray.Clone();
-                    gpu.CopyFromDevice(deviceColorArray, gpuColorArray);
+                    gpuTime.Start();
+                    gpu.Launch(N, 1, "kernelLabel", deviceGraphArray, deviceColorArray, deviceSwapOccured);
+                    gpuTime.Stop();
+
+                    gpu.CopyFromDevice(deviceColorArray, copyToGpuColorArray);
                     gpu.Free(deviceColorArray);
-                    if (Helper.EqualArrayContent(compareArray, gpuColorArray, N))
-                        repeat = false;
 
+                    
+                    if(Helper.CompareArrayEqual(copyToGpuColorArray,cpuColorArray))
+                         runIterator = false;
+
+                    if(iterations>N)
+                        runIterator = false;
+                    //gpu.CopyFromDevice(deviceSwapOccured, swapOccured);
+                    //for (int t = 0; t < N; t++)
+                    //{
+                    //    runIterator = false;
+                    //    if (swapOccured[t] == 1)
+                    //    {
+                    //        runIterator = true;
+                    //        break;
+                    //    }
+                    //}
+                    iterations++;
                 }
+
             }
             catch (Exception ex)
             {
-
+                throw;
             }
             finally
             {
                 gpu.Free(deviceGraphArray);
-
-                returnString += " : GPU TIME : " + s.Elapsed.Ticks;
-                for (int i = 0; i < (gpuColorArray.Length) / 2; i++)
+                gpu.Free(deviceSwapOccured);
+                for (int i = 0; i < N; i++)
                 {
-                    if (gpuColorArray[i, 0] != cpuColorArray[i, 0])
+                    if (copyToGpuColorArray[i, 0] != cpuColorArray[i, 0])
                     {
                         returnValue = false;
                         break;
                     }
                 }
+                copyToGpuColorArray = null;
+                cpuColorArray = null;
             }
 
             if (returnValue)
-                return returnString;
+            {
+                da.InsertResult(d, N, cpuTime.Elapsed.Ticks, gpuTime.Elapsed.Ticks, colors, 0, iterations);
+            }
             else
-                return "no match";
+                da.InsertResult(d, N, 0, 0, colors, 0, iterations);
+
+            km = null;
         }
 
 
         [Cudafy]
-        public static void kernelLabel(GThread thread, int[,] graphArray, int[,] colorArray)
+        public static void kernelLabel(GThread thread, int[,] graphArray, int[,] colorArray, int[] swapOccured)
         {
-            //isChanged = 0;
-            int t_id = thread.blockIdx.x;
+
+            //int t_id = thread.blockIdx.x;
+            int t_id = thread.blockIdx.x*thread.blockDim.x+thread.threadIdx.x;
             if (t_id < N)
             {
-                int device_d = d;
-                while (device_d > 0)
+
+                swapOccured[t_id] = 0;
+                int number = t_id;
+                for (int j = 0; j < d; j++)
                 {
-                    if (colorArray[t_id, 1] == colorArray[graphArray[t_id, device_d], 1])
+                    if (colorArray[t_id, 1] == colorArray[number ^ (1 << j), 1])
                     {
-                        if (colorArray[t_id, 0] == colorArray[graphArray[t_id, device_d], 0])
+                        if (colorArray[t_id, 0] > colorArray[number ^ (1 << j), 0])
                         {
-                            continue;
+                            colorArray[t_id, 0] = colorArray[number ^ (1 << j), 0];
+                            swapOccured[t_id] = 1;
                         }
-                        if (colorArray[t_id, 0] > colorArray[graphArray[t_id, device_d], 0])
-                        {
-                            colorArray[t_id, 0] = colorArray[graphArray[t_id, device_d], 0];
-                        }
-                        else
-                            colorArray[graphArray[t_id, device_d], 0] = colorArray[t_id, 0];
                     }
-                    device_d--;
+
                 }
+
             }
         }
 
@@ -138,7 +175,7 @@ namespace LabelComponent
             while (queue.Count > 0)
             {
                 index = queue.Dequeue();
-                for (int i = 1; i <= d; i++)
+                for (int i = 0; i < d; i++)
                 {
                     if (!hashset.Contains(graphArr[index, i]))
                     {
@@ -162,6 +199,9 @@ namespace LabelComponent
 
                 }
             }
+            hashset.Clear();
+            hashset = null;
+            queue = null;
             return colorArr;
         }
 
@@ -171,19 +211,21 @@ namespace LabelComponent
         /// </summary>
         public void GenerateGraph()
         {
+            graphArray = new int[N, d];
+            colorArray = new int[N, 2];
             int size = (int)Math.Pow(2, d);
             int number = 0;
             for (int i = 0; i < size; i++)
             {
-                graphArray[i, 0] = i;
+                //graphArray[i, 0] = i;
                 colorArray[i, 0] = i;
 
-                colorArray[i, 1] = (int)(random.NextDouble() * (size / 3));
+                colorArray[i, 1] = random.Next(0, colors);
 
                 number = i;
                 for (int j = 0; j < d; j++)
                 {
-                    graphArray[i, j + 1] = number ^ (1 << j);
+                    graphArray[i, j] = number ^ (1 << j);
                 }
             }
 
