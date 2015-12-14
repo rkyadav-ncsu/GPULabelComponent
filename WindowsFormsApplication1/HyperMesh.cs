@@ -15,7 +15,8 @@ namespace LabelComponent
 {
     class HyperMesh
     {
-        DataAdapter da = new DataAdapter();
+     //uncheck if dataadapter is used
+        //DataAdapter da = new DataAdapter();
 
         int[,] graphArray = new int[N, d + 1];
         /// <summary>
