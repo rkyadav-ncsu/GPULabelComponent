@@ -27,14 +27,14 @@ namespace LabelComponent
             }
             return true;
         }
-        public static bool CompareArrayEqual(int[,] firstArray, int[,] secondArray)
+        public static bool CompareArrayEqual(int[] firstArray, int[] secondArray)
         {
             if (firstArray.Length != secondArray.Length)
                 return false;
-            int n = firstArray.Length/2;
+            int n = firstArray.Length;
             for (int i = 0; i < n; i++)
             {
-                if (firstArray[i,0] != secondArray[i,0])
+                if (firstArray[i] != secondArray[i])
                 {
                     return false;
                 }

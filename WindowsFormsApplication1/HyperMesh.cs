@@ -22,9 +22,10 @@ namespace LabelComponent
         /// (i,0) is label
         /// (i,1) is color or weight
         /// </summary>
-        int[,] colorArray = new int[N, 2];
-        public const int d = 11;
-        public const int N = 4096;
+        int[] colorArray = new int[N];
+        int[] labelArray = new int[N];
+        public const int d = 15;
+        public const int N = 32768;
         public int colors = 1;
         Random random = new Random();
 
@@ -35,10 +36,9 @@ namespace LabelComponent
         public void labelMesh()
         {
             bool returnValue = true;
-            string returnString = "";
             //calculate component labeling using BFS for CPU
             Stopwatch cpuTime = Stopwatch.StartNew();
-            int[,] cpuColorArray = this.runBFS(graphArray, (int[,])colorArray.Clone());
+            int[] cpuLabelArray = this.runBFS(graphArray,colorArray, (int[])labelArray.Clone());
             cpuTime.Stop();
 
             CudafyModule km = CudafyModule.TryDeserialize();
@@ -52,13 +52,13 @@ namespace LabelComponent
             GPGPU gpu = CudafyHost.GetDevice(CudafyModes.Target, CudafyModes.DeviceId);
             gpu.LoadModule(km);
 
-            //graph array
-            int[,] deviceGraphArray = gpu.Allocate<int>(graphArray);
-            gpu.CopyToDevice(graphArray, deviceGraphArray);
-
+            
             //color array copy for GPU
-            int[,] copyToGpuColorArray = (int[,])colorArray.Clone();
+            int[] copyToGpuColorArray = (int[])colorArray.Clone();
+            int[] copyToGpuLabelArray = (int[])labelArray.Clone();
             //color array copy on GPU and transfer in next statement
+            int[] deviceColorArray = gpu.Allocate<int>(copyToGpuColorArray);
+            gpu.CopyToDevice(copyToGpuColorArray, deviceColorArray);
 
             //comparer
             int[] swapOccured = new int[N];
@@ -76,32 +76,26 @@ namespace LabelComponent
 
                 while (runIterator)
                 {
-                    int[,] deviceColorArray = gpu.Allocate<int>(copyToGpuColorArray);
-                    gpu.CopyToDevice(copyToGpuColorArray, deviceColorArray);
+                    int[] deviceLabelArray = gpu.Allocate<int>(copyToGpuLabelArray);
+                    gpu.CopyToDevice(copyToGpuLabelArray, deviceLabelArray);
 
                     gpuTime.Start();
-                    gpu.Launch(N, 1, "kernelLabel", deviceGraphArray, deviceColorArray, deviceSwapOccured);
+                    gpu.Launch(N, 1, "kernelLabel", deviceColorArray, deviceLabelArray, deviceSwapOccured);
                     gpuTime.Stop();
 
-                    gpu.CopyFromDevice(deviceColorArray, copyToGpuColorArray);
-                    gpu.Free(deviceColorArray);
+                    gpu.CopyFromDevice(deviceLabelArray, copyToGpuLabelArray);
+                    gpu.Free(deviceLabelArray);
 
-                    
-                    if(Helper.CompareArrayEqual(copyToGpuColorArray,cpuColorArray))
-                         runIterator = false;
-
-                    if(iterations>N)
+                    gpu.CopyFromDevice(deviceSwapOccured, swapOccured);
+                    for (int t = 0; t < N; t++)
+                    {
                         runIterator = false;
-                    //gpu.CopyFromDevice(deviceSwapOccured, swapOccured);
-                    //for (int t = 0; t < N; t++)
-                    //{
-                    //    runIterator = false;
-                    //    if (swapOccured[t] == 1)
-                    //    {
-                    //        runIterator = true;
-                    //        break;
-                    //    }
-                    //}
+                        if (swapOccured[t] == 1)
+                        {
+                            runIterator = true;
+                            break;
+                        }
+                    }
                     iterations++;
                 }
 
@@ -112,18 +106,18 @@ namespace LabelComponent
             }
             finally
             {
-                gpu.Free(deviceGraphArray);
                 gpu.Free(deviceSwapOccured);
+                gpu.Free(deviceColorArray);
                 for (int i = 0; i < N; i++)
                 {
-                    if (copyToGpuColorArray[i, 0] != cpuColorArray[i, 0])
+                    if (copyToGpuColorArray[i] != cpuLabelArray[i])
                     {
                         returnValue = false;
                         break;
                     }
                 }
                 copyToGpuColorArray = null;
-                cpuColorArray = null;
+                cpuLabelArray = null;
             }
 
             if (returnValue)
@@ -138,33 +132,32 @@ namespace LabelComponent
 
 
         [Cudafy]
-        public static void kernelLabel(GThread thread, int[,] graphArray, int[,] colorArray, int[] swapOccured)
+        public static void kernelLabel(GThread thread, int[] colorArray, int[] labelArray, int[] swapOccured)
         {
 
-            //int t_id = thread.blockIdx.x;
-            int t_id = thread.blockIdx.x*thread.blockDim.x+thread.threadIdx.x;
+            int t_id = thread.blockIdx.x;
+            t_id = t_id * 2;
             if (t_id < N)
             {
-
                 swapOccured[t_id] = 0;
-                int number = t_id;
                 for (int j = 0; j < d; j++)
                 {
-                    if (colorArray[t_id, 1] == colorArray[number ^ (1 << j), 1])
+                    if (colorArray[t_id] == colorArray[(t_id ^ (1 << j))])
                     {
-                        if (colorArray[t_id, 0] > colorArray[number ^ (1 << j), 0])
+                        if (labelArray[t_id] > labelArray[(t_id ^ (1 << j))])
                         {
-                            colorArray[t_id, 0] = colorArray[number ^ (1 << j), 0];
+                            labelArray[t_id] = labelArray[(t_id ^ (1 << j))];
                             swapOccured[t_id] = 1;
                         }
                     }
 
                 }
+                t_id = t_id + 1;
 
             }
         }
 
-        private int[,] runBFS(int[,] graphArr, int[,] colorArr)
+        private int[] runBFS(int[,] graphArr, int[] colorArr,int[] labelArr)
         {
             Queue<int> queue = new Queue<int>();
             HashSet<int> hashset = new HashSet<int>();
@@ -182,16 +175,16 @@ namespace LabelComponent
                         queue.Enqueue(graphArr[index, i]);
                         hashset.Add(graphArr[index, i]);
                     }
-                    if (colorArr[index, 1] == colorArr[graphArr[index, i], 1] && colorArr[index, 0] != colorArr[graphArr[index, i], 0])
+                    if (colorArr[index] == colorArr[graphArr[index, i]] && labelArr[index] != labelArr[graphArr[index, i]])
                     {
-                        if (colorArr[index, 0] > colorArr[graphArr[index, i], 0])
+                        if (labelArr[index] > labelArr[graphArr[index, i]])
                         {
-                            colorArr[index, 0] = colorArr[graphArr[index, i], 0];
+                            labelArr[index] = labelArr[graphArr[index, i]];
                             queue.Enqueue(index);
                         }
                         else
                         {
-                            colorArr[graphArr[index, i], 0] = colorArr[index, 0];
+                            labelArr[graphArr[index, i]] = labelArr[index];
                             queue.Enqueue(index);
                         }
                     }
@@ -212,15 +205,14 @@ namespace LabelComponent
         public void GenerateGraph()
         {
             graphArray = new int[N, d];
-            colorArray = new int[N, 2];
+            colorArray = new int[N];
+            labelArray = new int[N];
             int size = (int)Math.Pow(2, d);
             int number = 0;
             for (int i = 0; i < size; i++)
             {
-                //graphArray[i, 0] = i;
-                colorArray[i, 0] = i;
-
-                colorArray[i, 1] = random.Next(0, colors);
+                labelArray[i] = i;
+                colorArray[i] = random.Next(0, colors);
 
                 number = i;
                 for (int j = 0; j < d; j++)

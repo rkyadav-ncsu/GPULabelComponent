@@ -28,16 +28,12 @@ namespace LabelComponent
             lblSecond.Text = "started";
             HyperMesh hyperMesh = new HyperMesh();
             int N = hyperMesh.getDiameter();
-
-            
             for (int i = 1; i <= N; i++)
             {
-                if (i == 6)
-                    break;
                 hyperMesh.colors = i;
+                hyperMesh.GenerateGraph();
                 for (int j = 0; j < 11; j++)
                 {
-                    hyperMesh.GenerateGraph();
                     hyperMesh.labelMesh();
                 }
             }
