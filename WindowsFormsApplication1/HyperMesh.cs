@@ -122,10 +122,12 @@ namespace LabelComponent
 
             if (returnValue)
             {
-                da.InsertResult(d, N, cpuTime.Elapsed.Ticks, gpuTime.Elapsed.Ticks, colors, 0, iterations);
+             //uncomment this if data store is used
+                //da.InsertResult(d, N, cpuTime.Elapsed.Ticks, gpuTime.Elapsed.Ticks, colors, 0, iterations);
             }
             else
-                da.InsertResult(d, N, 0, 0, colors, 0, iterations);
+             //uncomment this if data store is used.
+                //da.InsertResult(d, N, 0, 0, colors, 0, iterations);
 
             km = null;
         }
