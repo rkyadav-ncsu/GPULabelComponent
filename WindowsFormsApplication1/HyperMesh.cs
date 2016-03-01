@@ -214,12 +214,15 @@ namespace LabelComponent
             int number = 0;
             for (int i = 0; i < size; i++)
             {
+                //label array stores the vertex id.
                 labelArray[i] = i;
+                //assigning random colors to color array.
                 colorArray[i] = random.Next(0, colors);
 
                 number = i;
                 for (int j = 0; j < d; j++)
                 {
+                    //adding neighbor information
                     graphArray[i, j] = number ^ (1 << j);
                 }
             }
